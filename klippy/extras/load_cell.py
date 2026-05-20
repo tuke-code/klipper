@@ -53,7 +53,7 @@ class ApiClientHelper(object):
         wh = self.printer.lookup_object('webhooks')
         wh.register_mux_endpoint(path, key, value, self._add_webhooks_client)
 
-# Class for handling commands related ot load cells
+# Class for handling commands related to load cells
 class LoadCellCommandHelper:
     def __init__(self, config, load_cell):
         self.printer = config.get_printer()
@@ -313,6 +313,8 @@ class LoadCellSampleCollector:
         self._errors = 0
         overflows = self._overflows
         self._overflows = 0
+        if self._mcu.is_fileoutput():
+            samples = [(0., 0., 0.)]
         return samples, (errors, overflows) if errors or overflows else 0
 
     def _collect_until(self, timeout):
@@ -324,6 +326,8 @@ class LoadCellSampleCollector:
                 raise self._printer.command_error(
                     "LoadCellSampleCollector timed out! Errors: %i,"
                     " Overflows: %i" % (self._errors, self._overflows))
+            if self._mcu.is_fileoutput():
+                break
             self._reactor.pause(now + RETRY_DELAY)
         return self._finish_collecting()
 
@@ -365,7 +369,7 @@ class LoadCell:
         self.config_name = config.get_name()
         self.name = config.get_name().split()[-1]
         self.sensor = sensor   # must implement BulkSensorAdc
-        buffer_size = sensor.get_samples_per_second() // 2
+        buffer_size = int(sensor.get_samples_per_second() / 2)
         self._force_buffer = collections.deque(maxlen=buffer_size)
         self.reference_tare_counts = config.getint('reference_tare_counts',
                                                    default=None)
@@ -383,7 +387,7 @@ class LoadCell:
         # startup, when klippy is ready, start capturing data
         printer.register_event_handler("klippy:ready", self._handle_ready)
 
-    def _handle_ready(self):
+    def _handle_do_ready(self, eventtime):
         self.sensor.add_client(self._sensor_data_event)
         self.add_client(self._track_force)
         # announce calibration status on ready
@@ -391,6 +395,8 @@ class LoadCell:
             self.printer.send_event("load_cell:calibrate", self)
         if self.is_tared():
             self.printer.send_event("load_cell:tare", self)
+    def _handle_ready(self):
+        self.printer.get_reactor().register_callback(self._handle_do_ready)
 
     # convert raw counts to grams and broadcast to clients
     def _sensor_data_event(self, msg):
@@ -450,7 +456,7 @@ class LoadCell:
     # performs safety checks for saturation
     def avg_counts(self, num_samples=None):
         if num_samples is None:
-            num_samples = self.sensor.get_samples_per_second()
+            num_samples = int(self.sensor.get_samples_per_second())
         samples, errors = self.get_collector().collect_min(num_samples)
         if errors:
             raise self.printer.command_error(
